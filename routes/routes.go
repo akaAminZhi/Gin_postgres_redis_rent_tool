@@ -43,6 +43,7 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 
 	g.GET("", uc.ListUsers)
 	g.DELETE("/:id", uc.DeleteUser)
+	r.GET("api/user/:id", app.AuthRequired(s, s.Repo), uc.GetUser)
 
 	// 登出：删 Redis，会话 Cookie 置空
 	r.POST("/webauthn/logout", app.AuthRequired(s, s.Repo), func(c *app.Ctx) {

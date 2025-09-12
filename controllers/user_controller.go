@@ -10,6 +10,7 @@ import (
 	"Gin_postgres_redis_rent_tool/session"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type UserController struct {
@@ -38,6 +39,28 @@ func (uc *UserController) ListUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, app.H{
 		"total": res.Total,
 		"users": res.Users,
+	})
+}
+
+// GET /api/users?id=
+func (uc *UserController) GetUser(c *gin.Context) {
+	id := c.Param("id") // ✅ 从路径取
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user id is required"})
+		return
+	}
+	if _, err := uuid.Parse(id); err != nil { // ✅ 校验 UUID 格式
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid uuid"})
+		return
+	}
+	user, err := uc.repo.FindUserByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, app.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, app.H{
+		"user": user,
 	})
 }
 
