@@ -75,6 +75,108 @@ func toWaCred(c models.Credential) webauthn.Credential {
 	}
 }
 
+// 开始添加：返回注册 options
+func (s *srv) BeginAddCredential(c *gin.Context) {
+	v, ok := c.Get("userID")
+	if !ok {
+		c.JSON(401, app.H{"error": "unauthorized get userID error"})
+		return
+	}
+	uid, _ := v.(string)
+	ctx := c.Request.Context()
+
+	u, err := s.Repo.FindUserByID(ctx, uid)
+	if err != nil {
+		c.JSON(401, app.H{"error": "unauthorized not found user"})
+		return
+	}
+
+	// 载入已有凭据，用于 excludeCredentials，避免重复注册
+	cs, _ := s.Repo.LoadUserCredentials(ctx, u.ID)
+	waCreds := make([]webauthn.Credential, 0, len(cs))
+	for _, cdb := range cs {
+		waCreds = append(waCreds, toWaCred(cdb))
+	}
+	wUser := &waUser{user: *u, creds: waCreds}
+
+	// 推荐：平台优先 + 需要 UV + 可发现凭据（手机 FaceID/TouchID 体验更好）
+	opts, sd, err := s.wa.BeginRegistration(
+		wUser,
+		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
+		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
+			// AuthenticatorAttachment: protocol.Platform,
+			UserVerification: protocol.VerificationRequired,
+		}),
+	)
+	if err != nil {
+		c.JSON(500, app.H{"error": err.Error()})
+		return
+	}
+
+	// 用用户名做 key 保存 SessionData
+	if err := s.sess.SaveReg(ctx, u.Username, sd); err != nil {
+		c.JSON(500, app.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, app.H{"opts": opts}) // 直接返回 options，前端解包 publicKey 层即可
+}
+
+// 完成添加：保存新凭据
+func (s *srv) FinishAddCredential(c *gin.Context) {
+	v, ok := c.Get("userID")
+	if !ok {
+		c.JSON(401, app.H{"error": "unauthorized"})
+		return
+	}
+	uid, _ := v.(string)
+	ctx := c.Request.Context()
+
+	u, err := s.Repo.FindUserByID(ctx, uid)
+	if err != nil {
+		c.JSON(401, app.H{"error": "unauthorized"})
+		return
+	}
+
+	cs, _ := s.Repo.LoadUserCredentials(ctx, u.ID)
+	waCreds := make([]webauthn.Credential, 0, len(cs))
+	for _, cdb := range cs {
+		waCreds = append(waCreds, toWaCred(cdb))
+	}
+	wUser := &waUser{user: *u, creds: waCreds}
+
+	sd, err := s.sess.LoadReg(ctx, u.Username)
+	if err != nil {
+		c.JSON(400, app.H{"error": "session expired or invalid"})
+		return
+	}
+
+	cred, err := s.wa.FinishRegistration(wUser, *sd, c.Request)
+	if err != nil {
+		c.JSON(400, app.H{"error": err.Error()})
+		return
+	}
+
+	// 保存新凭据
+	nc := &models.Credential{
+		UserID:          u.ID,
+		CredentialID:    cred.ID,
+		PublicKey:       cred.PublicKey,
+		AttestationType: cred.AttestationType,
+		AAGUID:          cred.Authenticator.AAGUID,
+		SignCount:       cred.Authenticator.SignCount,
+		CloneWarning:    cred.Authenticator.CloneWarning,
+		BackupEligible:  cred.Flags.BackupEligible,
+		BackupState:     cred.Flags.BackupState,
+	}
+	if err := s.Repo.AddCredential(ctx, nc); err != nil {
+		c.JSON(500, app.H{"error": err.Error()})
+		return
+	}
+
+	s.sess.DelReg(ctx, u.Username)
+	c.JSON(200, app.H{"ok": true})
+}
+
 // --- Registration ---
 
 func (s *srv) BeginRegistration(c *gin.Context) {

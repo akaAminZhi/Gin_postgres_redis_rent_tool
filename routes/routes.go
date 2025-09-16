@@ -23,7 +23,12 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 
 		userRoutes.POST("/login/begin", s.BeginLogin)
 		userRoutes.POST("/login/finish", s.FinishLogin)
+
 	}
+
+	r.POST("/api/credentials/add/begin", app.AuthRequired(s, s.Repo), s.BeginAddCredential)
+	r.POST("/api/credentials/add/finish", app.AuthRequired(s, s.Repo), s.FinishAddCredential)
+
 	// 受保护接口
 	r.GET("/webauthn/whoami",
 		app.AuthRequired(s, s.Repo),
@@ -35,6 +40,24 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 	// 管理员邀请route
 	ic := controllers.GetInviteController(s.Repo)
 	r.POST("/admin/invites", ic.CreateInvite)
+	ic_for_item := controllers.NewItemController(s.Repo)
+
+	// 管理（需要管理员）
+	admin := r.Group("/api/items",
+		app.AuthRequired(s, s.Repo),
+		app.AdminOnly(a.Config, s.Repo),
+	)
+	admin.POST("", ic_for_item.CreateItem)
+
+	// 用户借还（需要登录）
+	auth := r.Group("/api/items",
+		app.AuthRequired(s, s.Repo),
+		app.TouchLastSeen(s.Repo, a.RDB, 5*time.Minute),
+	)
+	auth.GET("", ic_for_item.ListItems)
+	auth.POST("/:id/borrow", ic_for_item.Borrow)
+	auth.POST("/loans/:loanId/return", ic_for_item.Return)
+	auth.GET("/loans", ic_for_item.ListLoans)
 
 	// 用户管理 route
 	uc := controllers.GetUserController(s.Repo, appSess, a.Config)
