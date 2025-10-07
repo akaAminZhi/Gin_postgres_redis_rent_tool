@@ -3,11 +3,15 @@ package models
 
 import "time"
 
+const LoanTable = "lsb_loans"
+const ItemTable = "lsb_items"
+
 type Item struct {
 	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	Serial    string    `gorm:"size:120;uniqueIndex;not null" json:"serial"` // 唯一编号
-	Name      string    `gorm:"size:200;not null" json:"name"`               // 可选：显示名称
-	Status    string    `gorm:"size:20;not null;default:'active'"`
+	Serial    string    `gorm:"size:120;uniqueIndex;not null" json:"serial"`     // 唯一编号
+	Name      string    `gorm:"size:200;not null" json:"name"`                   // 可选：显示名称
+	Status    string    `gorm:"size:20;not null;default:'active'" json:"status"` // 生命周期：active/maintenance/retired...
+	InUse     bool      `gorm:"not null;default:false" json:"inUse"`             // ✅ 冗余列：当前是否被借走
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -27,5 +31,5 @@ type Loan struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-func (Item) TableName() string { return "lsb_items" }
-func (Loan) TableName() string { return "lsb_loans" }
+func (Item) TableName() string { return ItemTable }
+func (Loan) TableName() string { return LoanTable }

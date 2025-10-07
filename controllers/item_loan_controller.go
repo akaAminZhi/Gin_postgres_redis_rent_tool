@@ -3,6 +3,7 @@ package controllers
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"Gin_postgres_redis_rent_tool/app"
@@ -13,9 +14,9 @@ import (
 	"github.com/google/uuid"
 )
 
-type ItemController struct{ Repo *db.Repo }
+type ItemController struct{ *Srv }
 
-func NewItemController(repo *db.Repo) *ItemController { return &ItemController{Repo: repo} }
+func NewItemController(s *Srv) *ItemController { return &ItemController{Srv: s} }
 
 // 管理员创建一件唯一物品
 func (ic *ItemController) CreateItem(c *gin.Context) {
@@ -42,17 +43,8 @@ func (ic *ItemController) ListItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, app.H{"error": err.Error()})
 		return
 	}
-
-	type Row struct {
-		models.Item
-		Available bool `json:"available"`
-	}
-	rows := make([]Row, 0, len(items))
-	for _, it := range items {
-		ok, _ := ic.Repo.IsItemAvailable(c.Request.Context(), it.ID)
-		rows = append(rows, Row{Item: it, Available: ok})
-	}
-	c.JSON(http.StatusOK, app.H{"items": rows})
+	// 直接返回 items，里头就有 InUse
+	c.JSON(http.StatusOK, app.H{"items": items})
 }
 
 // 借出
@@ -120,4 +112,24 @@ func (ic *ItemController) ListLoans(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, app.H{"items": ls})
+}
+
+func (ic *ItemController) ListItemsAdmin(c *gin.Context) {
+	q := db.AdminItemsQuery{
+		Q:      c.Query("q"),
+		Status: c.Query("status"), // "", "open", "available", "overdue", "inactive"
+	}
+	if v := c.DefaultQuery("page", "1"); v != "" {
+		q.Page, _ = strconv.Atoi(v)
+	}
+	if v := c.DefaultQuery("size", "20"); v != "" {
+		q.Size, _ = strconv.Atoi(v)
+	}
+
+	res, err := ic.Repo.ListItemsWithCurrentLoan(c.Request.Context(), q)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, app.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, app.H{"ok": true, "items": res})
 }

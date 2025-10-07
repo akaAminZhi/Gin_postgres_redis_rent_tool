@@ -11,32 +11,31 @@ import (
 
 const AppSessionCookie = "app_session"
 
-type AuthDeps interface {
-	AppSessions() *session.AppSessionStore
-}
-
-func AuthRequired(deps AuthDeps, repo *db.Repo) gin.HandlerFunc {
+func AuthRequired(appSess *session.AppSessionStore, repo *db.Repo) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ck, err := c.Request.Cookie(AppSessionCookie)
 		if err != nil || ck.Value == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, H{"error": "unauthorized"})
 			return
 		}
-		as, err := deps.AppSessions().Get(c.Request.Context(), ck.Value)
+		as, err := appSess.Get(c.Request.Context(), ck.Value)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, H{"error": "invalid session"})
 			return
 		}
 
-		// ✅ 关键：确认用户仍存在（也可以查 is_disabled 字段）
-		if _, err := repo.FindUserByID(c.Request.Context(), as.UserID); err != nil {
-			// 用户已删/禁用 → 清理这个会话，避免反复命中
-			_ = deps.AppSessions().Delete(c.Request.Context(), ck.Value)
+		// 这里确认用户仍存在，并把 isAdmin 放进 Context（只查一次）
+		u, err := repo.FindUserByID(c.Request.Context(), as.UserID)
+		if err != nil {
+			_ = appSess.Delete(c.Request.Context(), ck.Value)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
 		// 把 userID 放进上下文，后续 handler 可用
 		c.Set("userID", as.UserID)
+		c.Set("username", u.Username)
+
+		c.Set("isAdmin", u.IsAdmin)
 		c.Next()
 	}
 }
@@ -62,6 +61,12 @@ func AdminOnly(cfg Config, repo *db.Repo) gin.HandlerFunc {
 				return
 			}
 		}
-		c.AbortWithStatusJSON(http.StatusForbidden, H{"error": "forbidden"})
+
+		if !u.IsAdmin {
+			c.AbortWithStatusJSON(403, gin.H{"error": "forbidden"})
+			return
+		}
+		c.Next()
+		// c.AbortWithStatusJSON(http.StatusForbidden, H{"error": "forbidden"})
 	}
 }

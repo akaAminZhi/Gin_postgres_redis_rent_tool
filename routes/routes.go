@@ -13,13 +13,13 @@ import (
 func RegisterRoutes(r *gin.Engine, a *app.App) {
 	// 控制器与依赖
 	s := controllers.GetSrv(a)
-	appSess := s.GetAppSess()
-	uc := controllers.GetUserController(s.Repo, appSess, a.Config)
-	itemCtl := controllers.NewItemController(s.Repo)
-	inviteCtl := controllers.GetInviteController(s.Repo)
-
+	// appSess := s.GetAppSess()
+	uc := controllers.GetUserController(s)
+	itemCtl := controllers.NewItemController(s)
+	inviteCtl := controllers.GetInviteController(s)
+	lc := controllers.NewLockController(s)
 	// 复用的中间件
-	authMW := app.AuthRequired(s, s.Repo)
+	authMW := app.AuthRequired(s.AppSess, s.Repo)
 	adminMW := app.AdminOnly(a.Config, s.Repo)
 	seenMW := app.TouchLastSeen(s.Repo, a.RDB, 5*time.Minute)
 	secureCookie := strings.HasPrefix(a.Config.WebOrigin, "https://")
@@ -44,30 +44,19 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 			v, _ := c.Get("userID")
 			uid, _ := v.(string)
 
-			// u, err := s.Repo.FindUserByID(c.Request.Context(), uid)
-			// if err != nil {
-			// 	c.JSON(http.StatusUnauthorized, app.H{"error": "unauthorized"})
-			// 	return
-			// }
-			// credCount, _ := s.Repo.CountCredentials(c.Request.Context(), uid)
-
-			// isAdmin := false
-			// for _, mail := range a.Config.AdminEmails {
-			// 	if strings.EqualFold(mail, u.Username) {
-			// 		isAdmin = true
-			// 		break
-			// 	}
-			// }
-
-			c.JSON(http.StatusOK, app.H{
-				"userID": uid,
-			})
+			isAdmin := false
+			if x, ok := c.Get("isAdmin"); ok {
+				if b, ok2 := x.(bool); ok2 {
+					isAdmin = b
+				}
+			}
+			c.JSON(http.StatusOK, app.H{"userID": uid, "isAdmin": isAdmin})
 		})
 
 		// 登出
 		waAuth.POST("/logout", func(c *app.Ctx) {
 			if ck, err := c.Request.Cookie(app.AppSessionCookie); err == nil && ck.Value != "" {
-				_ = s.AppSessions().Delete(c.Request.Context(), ck.Value)
+				_ = s.AppSess.Delete(c.Request.Context(), ck.Value)
 			}
 			http.SetCookie(c.Writer, &http.Cookie{
 				Name:     app.AppSessionCookie,
@@ -97,13 +86,17 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 		admin.POST("/invites", inviteCtl.CreateInvite)
 	}
 
+	// 只需要登录即可查看单个用户
+	userPublic := r.Group("/api/users", authMW)
+	{
+		userPublic.GET("/:id", uc.GetUser)
+	}
 	// ------------------------------
 	// 用户管理（仅管理员）
 	// ------------------------------
 	users := r.Group("/api/users", authMW, adminMW)
 	{
-		users.GET("", uc.ListUsers)   // ?q=&page=&size=
-		users.GET("/:id", uc.GetUser) // 精确查单个
+		users.GET("", uc.ListUsers) // ?q=&page=&size=
 		users.DELETE("/:id", uc.DeleteUser)
 	}
 
@@ -111,9 +104,12 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 	// 借还（Item 唯一件）
 	// ------------------------------
 	// 管理：创建物品
-	itemsAdmin := r.Group("/api/items", authMW, adminMW)
+	itemsAdmin := r.Group("/api/admin", authMW, adminMW)
+	// itemsAdmin := r.Group("/api/admin")
+
 	{
 		itemsAdmin.POST("", itemCtl.CreateItem)
+		itemsAdmin.GET("/items", itemCtl.ListItemsAdmin) // ?q=&status=&page=&size=)
 	}
 
 	// 用户：浏览/借/还/记录
@@ -123,5 +119,9 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 		items.POST("/:id/borrow", itemCtl.Borrow)
 		items.POST("/loans/:loanId/return", itemCtl.Return)
 		items.GET("/loans", itemCtl.ListLoans) // ?status=open|returned&userId=&itemId=
+	}
+	unlock := r.Group("/api/unlock", authMW)
+	{
+		unlock.POST("", lc.Unlock) // 解锁（解冻）被锁定的物品
 	}
 }

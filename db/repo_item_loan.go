@@ -32,16 +32,20 @@ func (r *Repo) ListItems(ctx context.Context) ([]models.Item, error) {
 // Loans
 var ErrAlreadyBorrowed = errors.New("item already borrowed")
 
+// 借出：原子操作 = 锁住 item → 占用 in_use → 新建 loan
 func (r *Repo) BorrowItem(ctx context.Context, userID, itemID string, dueAt *time.Time, note string) (*models.Loan, error) {
 	var loan *models.Loan
 	err := r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 锁住该物品，防止并发超借
+		// 1) 锁住该物品
 		var it models.Item
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			First(&it, "id = ? AND status = 'active'", itemID).Error; err != nil {
 			return err
 		}
-		// 是否已被借出：未归还记录是否存在
+		// 2) 防并发：若已 in_use 或存在未归还 Loan，则拒绝
+		if it.InUse {
+			return ErrAlreadyBorrowed
+		}
 		var n int64
 		if err := tx.Model(&models.Loan{}).
 			Where("item_id = ? AND returned_at IS NULL", itemID).
@@ -51,7 +55,19 @@ func (r *Repo) BorrowItem(ctx context.Context, userID, itemID string, dueAt *tim
 		if n > 0 {
 			return ErrAlreadyBorrowed
 		}
+		// 3) 先占位（UPDATE ... WHERE id=? AND in_use=false 也可）
+		if err := tx.Model(&models.Item{}).
+			Where("id = ? AND in_use = FALSE", it.ID).
+			Update("in_use", true).Error; err != nil {
+			return err
+		}
+		// 4) 新建 Loan
 		now := time.Now().UTC()
+		if dueAt == nil {
+			d := now.Add(48 * time.Hour)
+			dueAt = &d
+		}
+
 		l := &models.Loan{
 			ID:         uuid.NewString(),
 			ItemID:     it.ID,
@@ -69,18 +85,33 @@ func (r *Repo) BorrowItem(ctx context.Context, userID, itemID string, dueAt *tim
 	return loan, err
 }
 
+// 归还：原子操作 = 完成 loan → 释放 in_use
 func (r *Repo) ReturnLoan(ctx context.Context, loanID string, returnedBy string) (*models.Loan, error) {
 	var l models.Loan
-	if err := r.DB.WithContext(ctx).First(&l, "id = ?", loanID).Error; err != nil {
-		return nil, err
-	}
-	if l.ReturnedAt != nil {
-		return &l, nil // 幂等
-	}
-	now := time.Now().UTC()
-	l.ReturnedAt = &now
-	l.ReturnedBy = &returnedBy
-	if err := r.DB.WithContext(ctx).Save(&l).Error; err != nil {
+	err := r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&l, "id = ?", loanID).Error; err != nil {
+			return err
+		}
+		// 幂等：已归还直接返回
+		if l.ReturnedAt != nil {
+			return nil
+		}
+		now := time.Now().UTC()
+		l.ReturnedAt = &now
+		l.ReturnedBy = &returnedBy
+		if err := tx.Save(&l).Error; err != nil {
+			return err
+		}
+		// 释放占用
+		if err := tx.Model(&models.Item{}).
+			Where("id = ?", l.ItemID).
+			Update("in_use", false).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &l, nil
@@ -94,7 +125,7 @@ func (r *Repo) ListLoans(ctx context.Context, userID, itemID, status string) ([]
 	if itemID != "" {
 		q = q.Where("item_id = ?", itemID)
 	}
-	if status == "open" {
+	if status == "avalible" {
 		q = q.Where("returned_at IS NULL")
 	} else if status == "returned" {
 		q = q.Where("returned_at IS NOT NULL")
@@ -107,11 +138,15 @@ func (r *Repo) ListLoans(ctx context.Context, userID, itemID, status string) ([]
 }
 
 // 汇总：该物品是否可用
+
 func (r *Repo) IsItemAvailable(ctx context.Context, itemID string) (bool, error) {
-	var n int64
-	err := r.DB.WithContext(ctx).
-		Model(&models.Loan{}).
-		Where("item_id = ? AND returned_at IS NULL", itemID).
-		Count(&n).Error
-	return n == 0, err
+	var inUse bool
+	if err := r.DB.WithContext(ctx).
+		Model(&models.Item{}).
+		Select("in_use").
+		Where("id = ?", itemID).
+		Scan(&inUse).Error; err != nil {
+		return false, err
+	}
+	return !inUse, nil
 }

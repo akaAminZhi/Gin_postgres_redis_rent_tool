@@ -16,6 +16,7 @@ type User struct {
 	LastLoginIP string     `gorm:"size:45" json:"-"`  // 可选，前端一般不直接展示
 	LastLoginUA string     `gorm:"size:255" json:"-"` // 可选
 
+	IsAdmin     bool      `gorm:"not null;default:false" json:"-"` // 对外接口默认不透出
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 	Credentials []Credential
