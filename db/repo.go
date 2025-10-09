@@ -44,6 +44,19 @@ func (r *Repo) FindUserByID(ctx context.Context, id string) (*models.User, error
 	return &u, nil
 }
 
+func (r *Repo) FindUserIDByUsername(ctx context.Context, username string) (*models.User, error) {
+	var u models.User
+	if err := r.DB.WithContext(ctx).
+		Where("LOWER(username) = LOWER(?)", username).
+		Take(&u).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("user not found")
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
 // 统计某用户的凭据数
 
 func (r *Repo) TouchCredentialUsed(ctx context.Context, credID []byte) error {

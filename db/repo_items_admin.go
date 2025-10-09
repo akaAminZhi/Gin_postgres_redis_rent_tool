@@ -4,8 +4,13 @@ package db
 import (
 	"Gin_postgres_redis_rent_tool/models"
 	"context"
+	"errors"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AdminItemRow struct {
@@ -112,4 +117,198 @@ func (r *Repo) ListItemsWithCurrentLoan(ctx context.Context, q AdminItemsQuery) 
 	}
 
 	return &PagedAdminItems{Total: total, Items: rows}, nil
+}
+
+type CreateAdminLoanInput struct {
+	ItemID string
+	UserID string
+	DueAt  *time.Time // optional
+	Note   string     // optional
+}
+
+func (r *Repo) CreateAdminLoan(ctx context.Context, in CreateAdminLoanInput) (*AdminItemRow, error) {
+	tx := r.DB.WithContext(ctx).Begin()
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1) 锁定 item 行避免并发
+	var it models.Item
+	if err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", in.ItemID).
+		First(&it).Error; err != nil {
+		tx.Rollback()
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("item not found")
+		}
+		return nil, err
+	}
+
+	// 2) 业务校验（按你的规则可自行调整）
+	if it.Status != "active" {
+		tx.Rollback()
+		return nil, errors.New("item is not active")
+	}
+	if it.InUse {
+		tx.Rollback()
+		return nil, errors.New("item is already in use")
+	}
+
+	// 3) 创建借用记录（依赖唯一部分索引防止并发重复打开）
+	loan := models.Loan{
+		// 如果你用 DB default uuid_generate_v4() 生成 ID，则不必在这里赋值
+		ID:         uuid.NewString(),
+		ItemID:     in.ItemID,
+		UserID:     in.UserID,
+		BorrowedAt: time.Now(),
+		DueAt:      in.DueAt,
+		Note:       in.Note,
+	}
+	if err := tx.Create(&loan).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// 4) 标记物品为 in_use = true
+	if err := tx.Model(&models.Item{}).
+		Where("id = ?", in.ItemID).
+		Updates(map[string]any{
+			"in_use":     true,
+			"updated_at": time.Now(),
+		}).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// 5) 读回统一视图（与你 ListItemsWithCurrentLoan 的 SELECT 保持一致）
+	var row AdminItemRow
+	if err := tx.
+		Table(models.ItemTable+" i").
+		Select(`
+			i.id, i.serial, i.name, i.status, i.in_use, i.created_at, i.updated_at,
+			ol.id        AS loan_id,
+			ol.user_id   AS borrower_id,
+			ol.borrowed_at,
+			ol.due_at,
+			u.username   AS borrower_username,
+			u.display_name AS borrower_display_name,
+			CASE WHEN ol.due_at IS NOT NULL AND ol.due_at < NOW() THEN TRUE ELSE FALSE END AS overdue
+		`).
+		Joins("LEFT JOIN "+models.LoanTable+" ol ON ol.item_id = i.id AND ol.returned_at IS NULL").
+		Joins("LEFT JOIN lsb_users u ON u.id = ol.user_id").
+		Where("i.id = ?", in.ItemID).
+		Scan(&row).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+type ReturnAdminLoanInput struct {
+	ItemID           string
+	ReturnedByUserID string
+	Note             string // 可选：归还备注，若提供会合并写入 Loan.Note
+}
+
+// ReturnAdminLoan sets returned_at/returned_by on the open loan of the item,
+// flips item.in_use = false, and returns a unified AdminItemRow.
+func (r *Repo) ReturnAdminLoan(ctx context.Context, in ReturnAdminLoanInput) (*AdminItemRow, error) {
+	tx := r.DB.WithContext(ctx).Begin()
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1) 锁定 item 行，避免并发
+	var it models.Item
+	if err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", in.ItemID).
+		First(&it).Error; err != nil {
+		tx.Rollback()
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("item not found")
+		}
+		return nil, err
+	}
+
+	// 2) 查找该 item 的 open loan（唯一部分索引保证只有一条）
+	var loan models.Loan
+	if err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("item_id = ? AND returned_at IS NULL", in.ItemID).
+		First(&loan).Error; err != nil {
+		tx.Rollback()
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("no open loan for this item")
+		}
+		return nil, err
+	}
+
+	now := time.Now()
+
+	// 3) 更新 loan：returned_at / returned_by (+ 合并备注)
+	update := map[string]any{
+		"returned_at": now,
+		"returned_by": in.ReturnedByUserID,
+		"updated_at":  now,
+	}
+	if strings.TrimSpace(in.Note) != "" {
+		// 合并到 Note（简单拼接；如需更复杂策略可自行调整）
+		newNote := strings.TrimSpace(strings.TrimSpace(loan.Note+" ") + in.Note)
+		update["note"] = newNote
+	}
+
+	if err := tx.Model(&models.Loan{}).
+		Where("id = ?", loan.ID).
+		Updates(update).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// 4) 标记 item 为未借出
+	if err := tx.Model(&models.Item{}).
+		Where("id = ?", in.ItemID).
+		Updates(map[string]any{
+			"in_use":     false,
+			"updated_at": now,
+		}).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// 5) 读回统一行（此时无 open loan，应返回空的借用字段）
+	var row AdminItemRow
+	if err := tx.
+		Table(models.ItemTable+" i").
+		Select(`
+			i.id, i.serial, i.name, i.status, i.in_use, i.created_at, i.updated_at,
+			ol.id        AS loan_id,
+			ol.user_id   AS borrower_id,
+			ol.borrowed_at,
+			ol.due_at,
+			u.username   AS borrower_username,
+			u.display_name AS borrower_display_name,
+			CASE WHEN ol.due_at IS NOT NULL AND ol.due_at < NOW() THEN TRUE ELSE FALSE END AS overdue
+		`).
+		Joins("LEFT JOIN "+models.LoanTable+" ol ON ol.item_id = i.id AND ol.returned_at IS NULL").
+		Joins("LEFT JOIN lsb_users u ON u.id = ol.user_id").
+		Where("i.id = ?", in.ItemID).
+		Scan(&row).Error; err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
 }

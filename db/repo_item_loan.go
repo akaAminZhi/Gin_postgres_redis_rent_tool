@@ -125,7 +125,7 @@ func (r *Repo) ListLoans(ctx context.Context, userID, itemID, status string) ([]
 	if itemID != "" {
 		q = q.Where("item_id = ?", itemID)
 	}
-	if status == "avalible" {
+	if status == "open" {
 		q = q.Where("returned_at IS NULL")
 	} else if status == "returned" {
 		q = q.Where("returned_at IS NOT NULL")
@@ -135,6 +135,54 @@ func (r *Repo) ListLoans(ctx context.Context, userID, itemID, status string) ([]
 		return nil, err
 	}
 	return ls, nil
+}
+
+type MyOpenLoanRow struct {
+	LoanID     string     `json:"loanId"`
+	ItemID     string     `json:"itemId"`
+	Serial     string     `json:"serial"`
+	Name       string     `json:"name"`
+	BorrowedAt time.Time  `json:"borrowedAt"`
+	DueAt      *time.Time `json:"dueAt,omitempty"`
+	Overdue    bool       `json:"overdue"`
+}
+
+type MyOpenLoansQuery struct {
+	Page int
+	Size int
+}
+
+func (r *Repo) ListMyOpenLoans(ctx context.Context, userID string, q MyOpenLoansQuery) ([]MyOpenLoanRow, error) {
+	if q.Page <= 0 {
+		q.Page = 1
+	}
+	if q.Size <= 0 || q.Size > 100 {
+		q.Size = 20
+	}
+	offset := (q.Page - 1) * q.Size
+
+	var rows []MyOpenLoanRow
+	err := r.DB.WithContext(ctx).
+		Table(models.LoanTable+" l").
+		Select(`
+			l.id AS loan_id,
+			l.item_id,
+			i.serial,
+			i.name,
+			l.borrowed_at,
+			l.due_at,
+			CASE WHEN l.due_at IS NOT NULL AND l.due_at < NOW() THEN TRUE ELSE FALSE END AS overdue
+		`).
+		Joins("JOIN "+models.ItemTable+" i ON i.id = l.item_id").
+		Where("l.user_id = ? AND l.returned_at IS NULL", userID).
+		Order("l.borrowed_at DESC").
+		Limit(q.Size).
+		Offset(offset).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // 汇总：该物品是否可用

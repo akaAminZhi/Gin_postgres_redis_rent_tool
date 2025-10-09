@@ -1,4 +1,4 @@
-// models/item.go
+// models/item_loan.go
 package models
 
 import "time"

@@ -109,6 +109,8 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 
 	{
 		itemsAdmin.POST("", itemCtl.CreateItem)
+		itemsAdmin.POST("/borrow", itemCtl.AdminBorrow)  // 管理员代借
+		itemsAdmin.POST("/return", itemCtl.AdminReturn)  // 管理员代还
 		itemsAdmin.GET("/items", itemCtl.ListItemsAdmin) // ?q=&status=&page=&size=)
 	}
 
@@ -118,8 +120,11 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 		items.GET("", itemCtl.ListItems)
 		items.POST("/:id/borrow", itemCtl.Borrow)
 		items.POST("/loans/:loanId/return", itemCtl.Return)
-		items.GET("/loans", itemCtl.ListLoans) // ?status=open|returned&userId=&itemId=
+		// items.GET("/loans", itemCtl.ListLoans) // ?status=open|returned&userId=&itemId=
+		items.GET("/loans/open", itemCtl.ListMyOpenLoans)
+
 	}
+	//  unlock
 	unlock := r.Group("/api/unlock", authMW)
 	{
 		unlock.POST("", lc.Unlock) // 解锁（解冻）被锁定的物品

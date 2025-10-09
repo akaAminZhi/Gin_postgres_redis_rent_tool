@@ -114,6 +114,36 @@ func (ic *ItemController) ListLoans(c *gin.Context) {
 	c.JSON(http.StatusOK, app.H{"items": ls})
 }
 
+// 普通用户：查看自己手上正在借着的工具
+func (ic *ItemController) ListMyOpenLoans(c *gin.Context) {
+	// 假设 userID 是通过登录态或中间件注入的
+	userID, ok := c.Get("userID")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	// 分页参数
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+
+	q := db.MyOpenLoansQuery{
+		Page: page,
+		Size: size,
+	}
+
+	// 调用 Repo 层函数
+	rows, err := ic.Repo.ListMyOpenLoans(c.Request.Context(), userID.(string), q)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items": rows,
+	})
+}
+
 func (ic *ItemController) ListItemsAdmin(c *gin.Context) {
 	q := db.AdminItemsQuery{
 		Q:      c.Query("q"),
@@ -132,4 +162,75 @@ func (ic *ItemController) ListItemsAdmin(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, app.H{"ok": true, "items": res})
+}
+
+type AdminBorrowReq struct {
+	ToolID   string     `json:"toolId" binding:"required"`
+	UserName string     `json:"userName" binding:"required"`
+	DueAt    *time.Time `json:"dueAt,omitempty"`
+	Note     string     `json:"note,omitempty"`
+}
+
+func (ic *ItemController) AdminBorrow(c *gin.Context) {
+	var req AdminBorrowReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+
+	// 先用 username 查 userId
+	user, err := ic.Repo.FindUserIDByUsername(c.Request.Context(), req.UserName)
+	if err != nil {
+		// 404 语义更合理，也可用 400
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	row, err := ic.Repo.CreateAdminLoan(c.Request.Context(), db.CreateAdminLoanInput{
+		ItemID: req.ToolID,
+		UserID: user.ID,
+		DueAt:  req.DueAt,
+		Note:   req.Note,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, row)
+}
+
+type AdminReturnReq struct {
+	ToolID   string `json:"toolId" binding:"required"`
+	Username string `json:"username" binding:"required"`
+	Note     string `json:"note,omitempty"`
+}
+
+func (ic *ItemController) AdminReturn(c *gin.Context) {
+	var req AdminReturnReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+
+	// 1) 先用 username 查 userId（归还人）
+	user, err := ic.Repo.FindUserIDByUsername(c.Request.Context(), req.Username)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 2) 执行归还
+	row, err := ic.Repo.ReturnAdminLoan(c.Request.Context(), db.ReturnAdminLoanInput{
+		ItemID:           req.ToolID,
+		ReturnedByUserID: user.ID,
+		Note:             req.Note,
+	})
+	if err != nil {
+		// 典型错误：no open loan for this item
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, row)
 }
