@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -27,6 +28,18 @@ func (uc *UserController) ListUsers(c *gin.Context) {
 	c.JSON(200, app.H{"total": res.Total, "users": res.Users})
 }
 
+func (uc *UserController) ListUsersWithOpenLoans(c *gin.Context) {
+	q := c.Query("q")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+
+	res, err := uc.Repo.ListUsersWithOpenLoans(c.Request.Context(), q, page, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, app.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, app.H{"users": res.Users, "total": res.Total})
+}
 func (uc *UserController) GetUser(c *gin.Context) {
 	id := c.Param("id")
 	if _, err := uuid.Parse(id); err != nil {

@@ -97,6 +97,7 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 	users := r.Group("/api/users", authMW, adminMW)
 	{
 		users.GET("", uc.ListUsers) // ?q=&page=&size=
+		users.GET("/loan", uc.ListUsersWithOpenLoans)
 		users.DELETE("/:id", uc.DeleteUser)
 	}
 
@@ -112,6 +113,7 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 		itemsAdmin.POST("/borrow", itemCtl.AdminBorrow)  // 管理员代借
 		itemsAdmin.POST("/return", itemCtl.AdminReturn)  // 管理员代还
 		itemsAdmin.GET("/items", itemCtl.ListItemsAdmin) // ?q=&status=&page=&size=)
+
 	}
 
 	// 用户：浏览/借/还/记录

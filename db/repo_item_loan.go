@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"Gin_postgres_redis_rent_tool/models"
@@ -183,6 +184,107 @@ func (r *Repo) ListMyOpenLoans(ctx context.Context, userID string, q MyOpenLoans
 		return nil, err
 	}
 	return rows, nil
+}
+
+type UserWithOpenLoans struct {
+	User      models.User     `json:"user"`
+	OpenLoans []MyOpenLoanRow `json:"openLoans,omitempty"`
+}
+
+type ListUsersWithOpenLoansResult struct {
+	Users []UserWithOpenLoans `json:"users"`
+	Total int64               `json:"total"`
+}
+
+func (r *Repo) ListUsersWithOpenLoans(ctx context.Context, q string, page, size int) (ListUsersWithOpenLoansResult, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 || size > 100 {
+		size = 20
+	}
+
+	// 1) 分页拿这一页用户
+	tx := r.DB.WithContext(ctx).Model(&models.User{})
+	if s := strings.TrimSpace(q); s != "" {
+		pat := "%" + strings.ToLower(s) + "%"
+		tx = tx.Where("LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?", pat, pat)
+	}
+
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		return ListUsersWithOpenLoansResult{}, err
+	}
+
+	var users []models.User
+	if err := tx.
+		Order("created_at DESC").
+		Offset((page - 1) * size).
+		Limit(size).
+		Find(&users).Error; err != nil {
+		return ListUsersWithOpenLoansResult{}, err
+	}
+	if len(users) == 0 {
+		return ListUsersWithOpenLoansResult{Users: []UserWithOpenLoans{}, Total: total}, nil
+	}
+
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+
+	// 2) 用 userID IN (...) 一次性查这批用户“未归还的借用” + 物品信息
+	type row struct {
+		UserID     string
+		LoanID     string
+		ItemID     string
+		Serial     string
+		Name       string
+		BorrowedAt time.Time
+		DueAt      *time.Time
+		Overdue    bool
+	}
+	var rows []row
+
+	if err := r.DB.WithContext(ctx).
+		Table(models.LoanTable+" l").
+		Select(`
+			l.user_id AS user_id,
+			l.id      AS loan_id,
+			l.item_id AS item_id,
+			i.serial, i.name,
+			l.borrowed_at, l.due_at,
+			CASE WHEN l.due_at IS NOT NULL AND l.due_at < NOW() THEN TRUE ELSE FALSE END AS overdue
+		`).
+		Joins("JOIN "+models.ItemTable+" i ON i.id = l.item_id").
+		Where("l.returned_at IS NULL AND l.user_id IN ?", ids).
+		Order("l.user_id, l.borrowed_at DESC").
+		Scan(&rows).Error; err != nil {
+		return ListUsersWithOpenLoansResult{}, err
+	}
+
+	// 3) 分组挂回用户
+	bucket := make(map[string][]MyOpenLoanRow, len(users))
+	for _, r0 := range rows {
+		bucket[r0.UserID] = append(bucket[r0.UserID], MyOpenLoanRow{
+			LoanID:     r0.LoanID,
+			ItemID:     r0.ItemID,
+			Serial:     r0.Serial,
+			Name:       r0.Name,
+			BorrowedAt: r0.BorrowedAt,
+			DueAt:      r0.DueAt,
+			Overdue:    r0.Overdue,
+		})
+	}
+
+	out := make([]UserWithOpenLoans, 0, len(users))
+	for _, u := range users {
+		out = append(out, UserWithOpenLoans{
+			User:      u,
+			OpenLoans: bucket[u.ID], // 没有则为 nil，前端可当空列表处理
+		})
+	}
+	return ListUsersWithOpenLoansResult{Users: out, Total: total}, nil
 }
 
 // 汇总：该物品是否可用
