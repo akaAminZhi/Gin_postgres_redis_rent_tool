@@ -19,7 +19,7 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 	inviteCtl := controllers.GetInviteController(s)
 	lc := controllers.NewLockController(s)
 	// 复用的中间件
-	authMW := app.AuthRequired(s.AppSess, s.Repo)
+	authMW := app.AuthRequired(s.AppSess, s.Repo, a.Config)
 	adminMW := app.AdminOnly(a.Config, s.Repo)
 	seenMW := app.TouchLastSeen(s.Repo, a.RDB, 5*time.Minute)
 	secureCookie := strings.HasPrefix(a.Config.WebOrigin, "https://")
@@ -84,6 +84,7 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 	admin := r.Group("/admin", authMW, adminMW)
 	{
 		admin.POST("/invites", inviteCtl.CreateInvite)
+
 	}
 
 	// 只需要登录即可查看单个用户
@@ -99,6 +100,7 @@ func RegisterRoutes(r *gin.Engine, a *app.App) {
 		users.GET("", uc.ListUsers) // ?q=&page=&size=
 		users.GET("/loan", uc.ListUsersWithOpenLoans)
 		users.DELETE("/:id", uc.DeleteUser)
+		users.PATCH("/:id", uc.UpdateUserAdmin)
 	}
 
 	// ------------------------------

@@ -9,7 +9,7 @@ import (
 
 func useCORS(r *gin.Engine, origin string) {
 	cfg := cors.Config{
-		AllowOrigins:     []string{origin, "https://87701380e67f.ngrok-free.app"},
+		AllowOrigins:     []string{origin, "https://87701380e67f.ngrok-free.app", "https://textile-alternate-relationships-pie.trycloudflare.com"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		AllowCredentials: true,

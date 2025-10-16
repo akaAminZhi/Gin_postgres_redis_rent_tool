@@ -33,14 +33,15 @@ type App struct {
 
 // Config 从环境变量读取
 type Config struct {
-	DatabaseURL string
-	RedisAddr   string
-	RedisPwd    string
-	WebOrigin   string
-	RPID        string
-	RPOrigins   []string
-	SessionTTL  time.Duration
-	AdminEmails []string
+	DatabaseURL    string
+	RedisAddr      string
+	RedisPwd       string
+	WebOrigin      string
+	RPID           string
+	RPOrigins      []string
+	SessionTTL     time.Duration
+	AdminEmails    []string
+	BootstrapEmail string // 第一次初始化时用的管理员邮箱，可留空
 }
 
 func (a *App) AppSessions() *session.AppSessionStore { return a.appSess }
@@ -57,7 +58,7 @@ func MustNew() *App {
 	// 	log.Fatalf("migrate: %v", err)
 	// }
 	dbConn := db.ConnectDB()
-
+	// BootstrapFirstAdmin(context.Background(), cfg, db.NewRepo(dbConn))
 	// --- Redis ---
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPwd, DB: 0})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -103,7 +104,7 @@ func loadConfig() Config {
 	if d, err := time.ParseDuration(ttlSec + "s"); err == nil {
 		ttl = d
 	}
-	originsCSV := get("RP_ORIGINS", "https://87701380e67f.ngrok-free.app")
+	originsCSV := get("RP_ORIGINS", "https://textile-alternate-relationships-pie.trycloudflare.com")
 	var origins []string
 	for _, o := range strings.Split(originsCSV, ",") {
 		if s := strings.TrimSpace(o); s != "" {
@@ -117,15 +118,17 @@ func loadConfig() Config {
 			admins = append(admins, strings.ToLower(t))
 		}
 	}
+
 	return Config{
 		// DatabaseURL: get("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/webauthn?sslmode=disable"),
-		RedisAddr:   get("REDIS_ADDR", "127.0.0.1:6379"),
-		RedisPwd:    os.Getenv("REDIS_PASSWORD"),
-		WebOrigin:   get("WEB_ORIGIN", "https://87701380e67f.ngrok-free.app"),
-		RPID:        get("RP_ID", "87701380e67f.ngrok-free.app"),
-		RPOrigins:   origins,
-		SessionTTL:  ttl,
-		AdminEmails: admins,
+		RedisAddr:      get("REDIS_ADDR", "127.0.0.1:6379"),
+		RedisPwd:       os.Getenv("REDIS_PASSWORD"),
+		WebOrigin:      get("WEB_ORIGIN", "https://textile-alternate-relationships-pie.trycloudflare.com"),
+		RPID:           get("RP_ID", "textile-alternate-relationships-pie.trycloudflare.com"),
+		RPOrigins:      origins,
+		SessionTTL:     ttl,
+		AdminEmails:    admins,
+		BootstrapEmail: get("BOOTSTRAP_ADMIN_EMAIL", ""),
 	}
 }
 

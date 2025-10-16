@@ -11,7 +11,7 @@ import (
 
 const AppSessionCookie = "app_session"
 
-func AuthRequired(appSess *session.AppSessionStore, repo *db.Repo) gin.HandlerFunc {
+func AuthRequired(appSess *session.AppSessionStore, repo *db.Repo, cfg Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ck, err := c.Request.Cookie(AppSessionCookie)
 		if err != nil || ck.Value == "" {
@@ -34,8 +34,14 @@ func AuthRequired(appSess *session.AppSessionStore, repo *db.Repo) gin.HandlerFu
 		// 把 userID 放进上下文，后续 handler 可用
 		c.Set("userID", as.UserID)
 		c.Set("username", u.Username)
-
+		email := strings.ToLower(u.Username)
+		for _, admin := range cfg.AdminEmails {
+			if email == admin {
+				c.Set("isAdmin", true)
+			}
+		}
 		c.Set("isAdmin", u.IsAdmin)
+
 		c.Next()
 	}
 }

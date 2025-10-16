@@ -74,8 +74,8 @@ func (uc *UserController) DeleteUser(c *gin.Context) {
 	email := strings.ToLower(target.Username)
 	for _, admin := range uc.Cfg.AdminEmails {
 		if email == admin {
-			c.JSON(403, app.H{"error": "cannot delete an admin"})
-			return
+			// c.JSON(403, app.H{"error": "cannot delete an admin"})
+			// return
 		}
 	}
 	if err := uc.Repo.DeleteUserByID(c, id); err != nil {
@@ -84,4 +84,20 @@ func (uc *UserController) DeleteUser(c *gin.Context) {
 	}
 	_ = uc.AppSess.RevokeAllForUser(c, id)
 	c.JSON(200, app.H{"ok": true})
+}
+
+func (uc *UserController) UpdateUserAdmin(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(400, app.H{"error": "missing id"})
+		return
+	}
+	if err := uc.Repo.SetUserAdmin(c, id, true); err != nil {
+		c.JSON(500, app.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"userId":  id,
+		"isAdmin": true,
+	})
 }

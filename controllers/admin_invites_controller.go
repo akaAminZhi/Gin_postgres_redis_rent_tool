@@ -60,6 +60,8 @@ func (ic *InviteController) CreateInvite(c *gin.Context) {
 	// 发邮件（若未配置 SMTP，打印日志但不报错）
 	if err := ic.sendInviteMail(in.Email, link, in.Expires); err != nil {
 		log.Printf("[invite email] send failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send invite email"})
+		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
